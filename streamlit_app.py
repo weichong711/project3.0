@@ -1,29 +1,27 @@
-import streamlit as st
 import pandas as pd
-import yfinance as yf
 import numpy as np
+import yfinance as yf
+from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error
-from datetime import datetime, timedelta
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import plotly.graph_objects as go
+import streamlit as st
 
-# Set up the Streamlit app
-st.title("Real-Time Stock Market Analysis and Prediction")
-st.sidebar.header("Input Parameters")
+# Step 1: Fetch Live Stock Data
+def fetch_live_stock_data(ticker, period="6mo", interval="1d"):
+    """Retrieve live stock data using yfinance."""
+    try:
+        data = yf.download(ticker, period=period, interval=interval)
+        if data.empty:
+            raise ValueError("No data found for the ticker.")
+        return data
+    except Exception as e:
+        st.error(f"Error fetching stock data: {e}")
+        return None
 
-# Sidebar Inputs
-ticker = st.sidebar.text_input("Stock Ticker Symbol (e.g., AAPL, TSLA):", value="AAPL")
-lookback_days = st.sidebar.slider("Number of Lookback Days:", min_value=30, max_value=365, value=200)
-interval = st.sidebar.slider("Prediction Refresh Interval (seconds):", min_value=10, max_value=300, value=60)
-
-# Function to fetch stock data
-def fetch_stock_data(ticker, lookback_days):
-    end_date = datetime.now()
-    start_date = end_date - timedelta(days=lookback_days)
-    data = yf.download(ticker, start=start_date, end=end_date)
-    return data
-
-# Function to prepare features
+# Step 2: Feature Engineering
 def prepare_features(data):
+    """Generate features for the model."""
     data['Return'] = data['Adj Close'].pct_change()
     data['MA10'] = data['Adj Close'].rolling(10).mean()
     data['MA50'] = data['Adj Close'].rolling(50).mean()
@@ -33,41 +31,76 @@ def prepare_features(data):
     data.dropna(inplace=True)
     return data
 
-# Function to train model
-def train_model(data):
+# Step 3: Train-Test Split
+def split_data(data):
+    """Split data into training and testing sets."""
     X = data[['MA10', 'MA50', 'EMA10', 'EMA50', 'Volatility']]
     y = data['Adj Close']
+    return train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Step 4: Train Model
+def train_model(X_train, y_train):
+    """Train a Random Forest model."""
     model = RandomForestRegressor(n_estimators=100, random_state=42)
-    model.fit(X, y)
+    model.fit(X_train, y_train)
     return model
 
-# Fetch and process data
-st.write(f"Fetching stock data for **{ticker}**...")
-data = fetch_stock_data(ticker, lookback_days)
+# Step 5: Evaluate Model
+def evaluate_model(model, X_test, y_test):
+    """Evaluate the model and return metrics."""
+    predictions = model.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test, predictions))
+    mae = mean_absolute_error(y_test, predictions)
+    r2 = r2_score(y_test, predictions)
+    return rmse, mae, r2, predictions
 
-if not data.empty:
-    data = prepare_features(data)
-    st.write(f"Data preview for **{ticker}**:")
-    st.dataframe(data.tail())
+# Step 6: Visualization
+def visualize_predictions(data, predictions):
+    """Visualize actual vs predicted stock prices using Plotly."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=data['Adj Close'], name="Actual Prices", line=dict(color='blue')))
+    fig.add_trace(go.Scatter(y=predictions, name="Predicted Prices", line=dict(color='orange')))
+    fig.update_layout(
+        title="Stock Price Prediction",
+        xaxis_title="Time",
+        yaxis_title="Price",
+        legend=dict(x=0, y=1),
+        template="plotly_dark"
+    )
+    return fig
 
-    # Train the model
-    st.write("Training the model...")
-    model = train_model(data)
+# Streamlit App
+def main():
+    st.title("Live Stock Prediction System")
+    
+    ticker = st.text_input("Enter the stock ticker (e.g., AAPL for Apple):", "AAPL").upper()
+    period = st.selectbox("Select data period:", ["1mo", "3mo", "6mo", "1y", "5y"])
+    interval = st.selectbox("Select data interval:", ["1d", "1wk", "1mo"])
+    
+    if st.button("Fetch and Predict"):
+        data = fetch_live_stock_data(ticker, period, interval)
+        if data is not None:
+            st.write(f"Fetched data for {ticker}:")
+            st.dataframe(data.tail())
+            
+            # Prepare features and split data
+            data = prepare_features(data)
+            X_train, X_test, y_train, y_test = split_data(data)
+            
+            # Train and evaluate model
+            model = train_model(X_train, y_train)
+            rmse, mae, r2, predictions = evaluate_model(model, X_test, y_test)
+            
+            # Display metrics
+            st.subheader("Model Performance")
+            st.write(f"RMSE: {rmse:.2f}")
+            st.write(f"MAE: {mae:.2f}")
+            st.write(f"R² Score: {r2:.2f}")
+            
+            # Visualize predictions
+            fig = visualize_predictions(data, predictions)
+            st.plotly_chart(fig)
 
-    # Make predictions
-    st.write("Making predictions...")
-    latest_features = data[['MA10', 'MA50', 'EMA10', 'EMA50', 'Volatility']].iloc[-1:]
-    prediction = model.predict(latest_features)
-    current_price = data['Adj Close'].iloc[-1]
-    predicted_price = prediction[0]
-
-    # Display results
-    st.write(f"### Current Price of {ticker}: ${current_price:.2f}")
-    st.write(f"### Predicted Price of {ticker}: ${predicted_price:.2f}")
-
-    # Real-time plotting
-    st.write("Price Trends:")
-    st.line_chart(data[['Adj Close', 'MA10', 'MA50']])
-
-else:
-    st.write(f"No data found for ticker **{ticker}**. Please check the symbol and try again.")
+if __name__ == "__main__":
+    main()
+ 
